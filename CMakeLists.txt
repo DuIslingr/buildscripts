@@ -75,19 +75,21 @@ function(toolchain_deps toolchain_deps_dir toolchain_install_dir toolchain_suffi
         # Use the host triplet when crosscompiling
         set(toolchain_host ${host_native})
         set(toolchain_cmake_args -DCMAKE_TOOLCHAIN_FILE=${toolchain_file})
-        # Workaround for libelf configure step (doesn't detect the compiler)
+        # Workaround for libelf configure step (doesn't detect the toolchain)
         set(cc_compiler "${host_native}-gcc")
+        set(ranlib "${host_native}-ranlib")
     else()
         # Use the same host triplet as the build env
         set(toolchain_host ${build_native})
-        # Use the default compiler
+        # Use the default toolchain
         set(cc_compiler "gcc")
+        set(ranlib "ranlib")
     endif()
 
     set(suffix "_${toolchain_suffix}")
 
     ExternalProject_Add(zlib${suffix}
-        URL http://zlib.net/zlib-1.2.8.tar.gz
+        URL http://downloads.sourceforge.net/project/libpng/zlib/1.2.8/zlib-1.2.8.tar.gz
         URL_HASH SHA256=36658cb768a54c1d4dec43c3116c27ed893e88b02ecfcb44f2166f9c0b7f2a0d
         DOWNLOAD_DIR ${DOWNLOAD_DIR}
         CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${toolchain_deps_dir}
@@ -107,6 +109,15 @@ function(toolchain_deps toolchain_deps_dir toolchain_install_dir toolchain_suffi
 
         # Tell libzip to use zlib static library (only on windows)
         set(libzip_configure -DCMAKE_C_FLAGS=-DZIP_STATIC)
+    else()
+        ExternalProject_Add_Step(zlib${suffix}
+            delete_shared
+            DEPENDEES install
+            COMMAND ${CMAKE_COMMAND} -E remove
+            ${toolchain_deps_dir}/lib/libz.so
+            ${toolchain_deps_dir}/lib/libz.so.1
+            COMMENT "Delete shared libraries, if present"
+            )
     endif()
 
     # Different configurations for the unix/windows builds of the toolchain
@@ -116,9 +127,15 @@ function(toolchain_deps toolchain_deps_dir toolchain_install_dir toolchain_suffi
         list(APPEND toolchain_cmake_args -DUSE_BUNDLED_ENDIAN_H=ON)
     endif()
 
+    if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows" AND (host_native STREQUAL build_native OR toolchain_file))
+        list(APPEND toolchain_cmake_args -DBUILD_SHARED_LIBS=ON)
+    else()
+        list(APPEND toolchain_cmake_args -DBUILD_SHARED_LIBS=OFF)
+    endif()
+
     ExternalProject_Add(libzip${suffix}
         DEPENDS zlib${suffix}
-        URL https://nih.at/libzip/libzip-1.1.3.tar.gz
+        URL https://github.com/devnoname120/libzip/releases/download/1.1.3/libzip-1.1.3.tar.gz
         URL_HASH SHA256=1faa5a524dd4a12c43b6344e618edce1bf8050dfdb9d0f73f3cc826929a002b0
         DOWNLOAD_DIR ${DOWNLOAD_DIR}
         PATCH_COMMAND patch -d <SOURCE_DIR> -p3 -t -N < ${PROJECT_SOURCE_DIR}/patches/libzip.patch
@@ -133,7 +150,7 @@ function(toolchain_deps toolchain_deps_dir toolchain_install_dir toolchain_suffi
         URL_HASH SHA256=591a9b4ec81c1f2042a97aa60564e0cb79d041c52faa7416acb38bc95bd2c76d
         DOWNLOAD_DIR ${DOWNLOAD_DIR}
         PATCH_COMMAND patch -d <SOURCE_DIR> -p3 -t -N < ${PROJECT_SOURCE_DIR}/patches/libelf.patch
-        CONFIGURE_COMMAND CC=${cc_compiler} ${compiler_flags} ${wrapper_command} <SOURCE_DIR>/configure
+        CONFIGURE_COMMAND CC=${cc_compiler} RANLIB=${ranlib} ${compiler_flags} ${wrapper_command} <SOURCE_DIR>/configure
         --build=${build_native}
         --host=${toolchain_host}
         --prefix=${toolchain_deps_dir}
@@ -476,7 +493,7 @@ fix_repo_update(newlib)
 # Using gcc-base doesn't work since is missing some headers.
 if(CMAKE_TOOLCHAIN_FILE)
     ExternalProject_add(gcc-complete
-        DEPENDS gmp_${build_suffix} mpfr_${build_suffix} mpc_${build_suffix} isl_${build_suffix}
+        DEPENDS newlib gmp_${build_suffix} mpfr_${build_suffix} mpc_${build_suffix} isl_${build_suffix}
         URL http://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.bz2
         URL_HASH ${GCC_HASH}
         DOWNLOAD_DIR ${DOWNLOAD_DIR}
@@ -554,8 +571,6 @@ ExternalProject_add(gcc-final
     BUILD_COMMAND ${toolchain_tools} ${compiler_target_tools} ${wrapper_command}
     $(MAKE) INHIBIT_LIBC_CFLAGS="-DUSE_TM_CLONE_REGISTRY=0"
     INSTALL_COMMAND $(MAKE) install
-    # Remove empty include directory in the installation directory
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_INSTALL_PREFIX}/include
     # Remove gcc docs to reduce size
     COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_INSTALL_PREFIX}/share/man
     COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_INSTALL_PREFIX}/share/info
